@@ -1,0 +1,394 @@
+---       
+title: '[Project 1 based on Angrist and Krueger (1991, QJE)] '
+output:
+  html_document:
+    code_folding: show
+    number_sections: yes
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+    keep_md: no
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+**Réalisé par :**
+
+* Segodo Ulrich
+* Coudray Yaelle
+* Gerent Fiona
+* Gomez Boris
+* Renaud Axelle 
+
+# Question 1
+Ce document essaie de montrer si la fréquentation scolaire obligatoire, en fonction de la saisonnalité, affecte, ou non, la scolarité et les revenus aux Etats-Unis. 
+L’utilisation des MCO est invalide car les capacités intellectuelles ne sont pas prises en compte : on parle d’un biais de variable. Malgré ce point, les estimations sont proches des MCO d’après le texte. Cela pourrait s’expliquer par une sous-estimation de la mesure qui compenserait la surestimation liée à l’endogénéité de l’éducation. C’est pourquoi nous avons besoin des variables instrumentales pour résoudre cette incohérence. 
+Dans ce document, deux natures de variables instrumentales sont utilisées : l’estimateur de Wald et l’estimateur des doubles moindres carrés ordinaires (TSLS en anglais). 
+L’auteur nous dit que le simple estimateur de Wald serait biaisé car il ne concernerai que les hommes d’un certain âge et donc apporterait une sous-estimation des salaires en fonction de la saisonnalité. 
+Il est donc préférable d’utiliser le modèle TSLS car les rendements de l’éducation sont statistiquement significatif. De plus, il est indiscernable de l’estimation des MCO, et donc sans biais.
+
+# Question 2 : Taches de réplication
+## Préliminaires pour la réalisation des figures et estimations
+```{r, message=FALSE}
+library(tidyverse)
+library(haven)
+library(ipumsr)
+library(foreign)
+library(sandwich)   # for: vcovCL
+library("AER")      # for: ivreg
+library("lmtest")   # for: coeftest
+library(stargazer)
+library(lubridate)
+library(ggplot2)
+
+path = "G:/Nouveau/SaiRstudio/project/"
+pums <- read.table(paste(path,"database/QOB.raw",sep=""),
+                   header           = FALSE,
+                   stringsAsFactors = FALSE)
+colnames(pums)[c(1,2,4,5,6,9:13,16,18,19:21,24,25,27)] <- c("AGE", "AGEQ", "EDUC",
+                            "ENOCENT","ESOCENT","LWKLYWGE", "MARRIED", "MIDATL", "MT",                              "NEWENG", "CENSUS", "QOB", "RACE", "SMSA", "SOATL", "WNOCENT",                            "WSOCENT", "YOB")
+pums <- as_tibble(pums)
+pums
+
+pums %>%
+  mutate(cohort = factor(1*(YOB<=39 & YOB >=30) +
+                           2*(YOB<=49 & YOB >=40),
+                         levels=c(1,2), labels=c("30-39","40-49")) ) -> pums
+```
+
+Créeons une nouvelle base sur laquelle nous allons faire les manipulations pour réaliser les figures.
+
+```{r}
+pums %>%
+  select(AGE, AGEQ, EDUC,
+         ENOCENT,ESOCENT, LWKLYWGE, 
+         MARRIED, MIDATL, MT, NEWENG, CENSUS, QOB, RACE,
+         SMSA, SOATL, WNOCENT, WSOCENT, YOB, cohort) -> mydata
+
+mydata %>%
+  mutate(date=ymd(paste("19",YOB,QOB * 3, sep=""),truncated = 2)) ->
+  mydata
+```
+
+## Réalisation de la figure 2
+```{r, fig.width=11, fig.height=6}
+mydata %>%
+  group_by(date, QOB) %>%
+  summarise(moyenne = mean(EDUC, na.rm=TRUE)) -> temp
+temp %>% 
+  mutate(QOB_factor = factor(QOB)) -> temp
+
+ggplot(data=temp, aes(x=date , y=moyenne)) +
+  geom_line()+
+  geom_point(aes(col=QOB_factor), size = 7)+
+  scale_color_manual(values = c("#DC101C", "#181616", "#181616", "#181616")) +
+  geom_text(aes(label=QOB_factor), hjust=0.5, vjust=0.5, col="white")+
+  theme(legend.position = "None")+
+  ggtitle("Average education by quarter of birth")+
+  xlab("Year of birth") + ylab("Years of education")
+```
+
+## Réalisation de la figure 5 
+
+```{r, fig.width=11, fig.height=6}
+mydata %>%
+  group_by(date, QOB) %>%
+  summarise(moyen = mean(LWKLYWGE, na.rm=TRUE)) -> temp1
+temp1 %>% 
+  mutate(QOB_factor = factor(QOB)) -> temp1
+
+ggplot(data=temp1, aes(x=date , y=moyen, shape=)) +
+  geom_line()+
+  geom_point(aes(col=QOB_factor), size = 7)+
+  scale_color_manual(values = c("#DC101C", "#181616", "#181616", "#181616")) +
+  geom_text(aes(label=QOB_factor), hjust=0.5, vjust=0.5, col="white")+
+  theme(legend.position = "None")+
+  ggtitle("Average weekly wage by quarter of birth")+
+  xlab("Year of birth") + ylab("Log weekly earnings")
+```
+
+## Présentation du tableau 5 (estimations OLS et IV)
+Pour presentation ce tableau, nous avions effectué les 8 estimations que voici :
+
+```{r}
+mydata %>%
+  filter(cohort == "30-39") -> mydata.tab5
+
+# Régression
+reg1.MCO <- lm(LWKLYWGE ~ EDUC + factor(YOB), data=mydata.tab5)
+summary(reg1.MCO)
+
+mydata.tab5 %>%
+  mutate( instru = factor(YOB):factor(QOB) )-> mydata.tab5
+reg2.TSLS <- ivreg(LWKLYWGE ~ EDUC + factor(YOB) | instru, data=mydata.tab5)
+summary(reg2.TSLS)
+
+reg3.MCO <- lm(LWKLYWGE ~ EDUC + factor(YOB)+ AGEQ + I(AGEQ^2), data=mydata.tab5)
+summary(reg3.MCO)
+
+reg4.TSLS <- ivreg(LWKLYWGE ~ EDUC + factor(YOB) + AGEQ + I(AGEQ^2) | instru +
+                     AGEQ + I(AGEQ^2), data=mydata.tab5)
+summary(reg4.TSLS)
+
+mydata.tab5 %>%
+  mutate( region_of_residence = factor(NEWENG + MIDATL + ENOCENT + 
+                                      WNOCENT + SOATL + ESOCENT + 
+                                      WSOCENT + MT)) -> mydata.tab5
+reg5.MCO <- lm(LWKLYWGE ~ EDUC + RACE  + SMSA + MARRIED + factor(YOB) + 
+                 region_of_residence, data=mydata.tab5)
+summary(reg5.MCO)
+
+reg6.TSLS <- ivreg(LWKLYWGE ~ EDUC + RACE  + SMSA + MARRIED + factor(YOB) +
+                     region_of_residence | instru + RACE  + SMSA + 
+                     MARRIED + factor(YOB) + region_of_residence, data=mydata.tab5)
+summary(reg6.TSLS)
+
+reg7.MCO <- lm(LWKLYWGE ~ EDUC + RACE  + SMSA + MARRIED + factor(YOB) + 
+                 region_of_residence +AGEQ + I(AGEQ^2), data=mydata.tab5)
+summary(reg7.MCO)
+
+reg8.TSLS <- ivreg(LWKLYWGE ~ EDUC + RACE  + SMSA + MARRIED + factor(YOB) +
+                     region_of_residence + AGEQ + I(AGEQ^2) | instru + RACE  + SMSA + 
+                     MARRIED + AGEQ + I(AGEQ^2) + factor(YOB) +
+                     region_of_residence , data=mydata.tab5)
+summary(reg8.TSLS)
+```
+
+Grace à stargazer, nous avions pu présenter les résultats dans un tableau comme suit :
+
+```{r}
+stargazer(reg1.MCO, reg2.TSLS, reg3.MCO, reg4.TSLS, reg5.MCO, reg6.TSLS, reg7.MCO,
+          reg8.TSLS,
+          dep.var.caption="",dep.var.labels="",
+          omit.table.layout = "n", star.cutoffs = NA,keep.stat=c("rsq","n"),no.space=TRUE,
+          header=FALSE,
+          keep=c("EDUC","RACE", "SMSA", "MARRIED", "AGE", "AGEQ^2"),
+          title="OLS and TSLS of the return to education for men born 1390-1939: 1980 CENSUS", type="text"
+)
+```
+
+## Présentation du tableau 3.B (estimations de Wald)
+```{r}
+mydata.tab5$wald_dum <- (mydata.tab5$QOB == 2 | mydata.tab5$QOB == 3 | mydata.tab5$QOB == 4) * 1 
+
+mydata.tab5 %>%
+  group_by(wald_dum == 0) %>%
+  summarize(moy_salaire =  mean(LWKLYWGE, na.rm=TRUE), 
+            moy_educ = mean(EDUC, na.rm=TRUE)) %>%
+  ungroup() -> temp3
+```
+On regroupe les données sous forme de tableau
+```{r}
+(data <-
+    data.frame(
+       "x" = c( "Moy_salaire", "Moy_educ"),
+      "1st quarter" = c(temp3$moy_salaire[2], temp3$moy_educ[2]),
+      "3rd or 4th" = c(temp3$moy_salaire[1], temp3$moy_educ[1])
+    )
+)
+```
+Ainsi nous Calculons l'estimateur des wald de l'estimateur de wald
+```{r}
+temp3 %>%
+  mutate(wage_Q1 = moy_salaire[2]) %>%
+  mutate(wage_Q2_4 = moy_salaire[1]) %>%
+  mutate(educ_Q1 = moy_educ[2]) %>%
+  mutate(educ_Q2_4 = moy_educ[1]) %>%
+  mutate(wald_est = (wage_Q1 - wage_Q2_4)/(educ_Q1 - educ_Q2_4)) %>%
+  mutate(wage_Q1 = NULL) %>%
+  mutate(wage_Q2_4 = NULL) %>%
+  mutate(educ_Q1 = NULL) %>%
+  mutate(educ_Q2_4 = NULL) ->temp3
+
+temp3$wald_est[1]
+
+```
+
+## Explication des figures et tables 
+
+### Figure 1 : Années d’éducations et saisonnalité des naissances de 1930 à 1940
+La figure 1 représente les années complètes de scolarité en fonction du trimestre de naissance de 1930 à 1940. On remarque qu’au début des années 1930, contrairement à la fin des années 1930, l’écart de scolarisation entre les personnes nées en début d’année et celles en fin d’année est plutôt important (0.4 ans en 1930, contre 0.1 ans en 1940). Généralement, les individus nés dans le premier trimestre de l’année sont scolarisés moins longtemps que les individus nés dans le troisième ou quatrième trimestre. 
+
+### Figure 2 : Années d'études et trimestre de naissance. 
+Ce graphique décrit la relation entre l'éducation et le trimestre de naissance pour les hommes nés au cours de cette période. Il existe une relation positive entre ces variables pour les hommes nés entre 1940 et 1947 et la tendance est à la baisse pour ceux nés entre 1947 et 1949. Cela peut s'expliquer par le fait que les hommes nés à la fin des années 1940 sont plus jeunes et n'ont pas terminé leur scolarité au moment de l’étude. Mais on peut aussi ajouter une autre explication conjoncturelle : la guerre du Vietnam.Nous pouvons également étudier la relation entre le trimestre de naissance et les années d'études terminées. La tendance principale affirme que le niveau d'éducation moyen est plus élevé pour les hommes nés vers la fin de l'année.
+
+### Figure 5 : Logarithme moyen du salaire hebdomadaire par trimestre de naissance, hommes nés entre 1930 et 1949. 
+Ce graphique présente le logarithme moyen du salaire hebdomadaire des hommes âgés de 30 à 49 ans par trimestre de naissance. Il a pour but de savoir si les petites différences d'éducation pour les hommes nés à différents trimestres de l'année ont un impact sur les revenus. On voit que les hommes nés au premier trimestre  gagnent un peu moins que les autres. On peut aussi dire qu'il existe une relation assez constante entre l'année de naissance et le revenu pour les hommes nés entre 1930 et 1939. Mais la relation est différente pour ceux nés entre 1940 et 1949 : le logarithme des revenus hebdomadaires diminue avec l'année de naissance.
+
+### Table 5 : Les estimations MCO et 2MCO sur les rendements d’éducation pour les hommes nés entre 1930 et 1939 
+La table 5 représente les estimations du modèle avec comme échantillon les hommes de 50 à 59 ans en 1980). On observe des similitudes dans les estimations des MCO et des 2MCO (TSLS) du rendement de l’éducation. La statistique du Xhi-deux teste l’hypothèse selon laquelle les diverses combinaisons d’instruments produisent la même estimation du rendement de l’éducation.
+
+
+### Tableau 3 : L’estimateur de Wald pour les hommes nés entre 1930 et 1939
+Pour le tableau 3, les auteurs utilisent le modèle saisonnier de l’éducation pour calculer le taux de rendement d’une année d’éducation à partir d’une application de la méthode de Wald. 
+Cet estimateur calcule simplement le rendement de l’éducation comme le rapport entre la différence de rémunération par trimestre de naissance et la différence d’années de scolarité par trimestre de naissance. Dans le tableau 3 la partie B représente l’ensemble des estimations pour les hommes nés entre 1930 et 1939. Pour cet échantillon, l’estimation de Wald du rendement de l’éducation est de 0,102 ce qui est supérieur à l’estimation par les MCO, mais cette différence n’est pas statistiquement significative.
+
+
+
+# Utilisation de l'extrait des données d'ipums USA avec les variables pertinentes, et comparaison avec les résutalts de notre extrait de données à QOB.raw
+Pour ce faire, nous sommes partir sur ipums extrait une base avec les varibles que nous avons retrouvé. Nous avons seulement pu télécharger une base avec les variables suivantes : AGE, AGEQ, EDUC, LWKLYWGE (obtenu à partir de incwage et wkswork1), QOB, RACE, YOB. Ainsi nous chargeons notre base de donnée.
+
+```{r, message=FALSE}
+ddi_ipums   <- read_ipums_ddi(paste(path,"database/usa_00002.xml",sep=""))
+mydata_ipums <- read_ipums_micro(ddi_ipums, data_file =
+                            paste(path,"database/usa_00002.dat",sep=""))
+```
+
+Pour rendre la base plus utilisable, on supprime les lignes pour lesquelles incwage et wkswork1 est égal à 0, sinon quand on applique log on obtient des na, nan et inf ce qui rendait les choses compliqués pour la suite
+
+```{r}
+mydata_ipums %>%
+  filter(INCWAGE > 0) %>%
+  filter(WKSWORK1 > 0) -> mydata_ipum
+```
+
+## Préliminaires
+```{r, message=FALSE}
+mydata_ipum %>%
+  mutate(LWKLYWGE = log(INCWAGE / WKSWORK1)) %>%
+  mutate(INCWAGE:=NULL,WKSWORK1:=NULL) %>%
+  mutate(EDUC = NA) %>%
+  mutate(EDUC = ifelse(EDUCD == 14, 1, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 15, 2, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 16, 3, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 17, 4, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 22, 5, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 23, 6, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 25, 7, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 26, 8, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 30, 9, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 40, 10, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 50, 11, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 60, 12, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 65 | EDUCD == 70, 13, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 80, 14, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 90, 15, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 100, 16, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 110, 17, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 111, 18, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD == 112, 19, EDUC)) %>%
+  mutate(EDUC = ifelse(EDUCD >= 113, 20, EDUC)) %>%
+  mutate(EDUCD := NULL) ->
+  mydata2_ipums
+
+mydata2_ipums %>%
+  mutate(cohort = factor(1*(BIRTHYR<=1939 & BIRTHYR >=1930) +
+                           2*(BIRTHYR<=1949 & BIRTHYR >=1940),
+                         levels=c(1,2), labels=c("30-39","40-49")) ) -> mydata2_ipums
+```
+
+## Figure 2 avec les données ipums 
+```{r, message=FALSE, fig.width=11, fig.height=6}
+mydata2_ipums %>%
+  group_by(BIRTHYR, BIRTHQTR) %>%
+  summarise(moyenne = mean(EDUC, na.rm=TRUE)) -> temp_ipums
+temp_ipums %>% 
+  mutate(BIRTHQTR_factor = factor(order(BIRTHQTR))) -> temp_ipums
+
+ggplot(data=temp_ipums %>% filter(BIRTHYR >= 1930 & BIRTHYR <= 1950), aes(x=BIRTHYR , y=moyenne)) +
+  geom_line()+
+  geom_point(aes(col=BIRTHQTR_factor), size = 7)+
+  scale_color_manual(values = c("#DC101C", "#181616", "#181616", "#181616")) +
+  geom_text(aes(label=BIRTHQTR_factor), hjust=0.5, vjust=0.5, col="white")+
+  theme(legend.position = "None")+
+  ggtitle("Average education by quarter of birth with ipums USA data")+
+  xlab("Year of birth") + ylab("Years of education")
+```
+
+## Figure 5 avec les données ipums 
+```{r, message=FALSE, fig.width=11, fig.height=6}
+mydata2_ipums %>%
+  group_by(BIRTHYR, BIRTHQTR) %>%
+  summarise(moyenne = mean(LWKLYWGE, na.rm=TRUE)) -> temp1_ipums
+temp1_ipums %>% 
+  mutate(BIRTHQTR_factor = factor(order(BIRTHQTR))) -> temp1_ipums
+
+ggplot(data=temp1_ipums  %>% filter(BIRTHYR >= 1930 & BIRTHYR <= 1950), aes(x=BIRTHYR , y=moyenne)) +
+  geom_line()+
+  geom_point(aes(col=BIRTHQTR_factor), size = 7)+
+  scale_color_manual(values = c("#DC101C", "#181616", "#181616", "#181616")) +
+  geom_text(aes(label=BIRTHQTR_factor), hjust=0.5, vjust=0.5, col="white")+
+  theme(legend.position = "None")+
+  ggtitle("Average weekly wage by quarter of birth with ipums USA data")+
+  xlab("Year of birth") + ylab("Log weekly earnings")
+```
+
+## Les tableaux 5 (estimations OLS et IV) et 3.B (estimations de Wald)
+```{r, message=FALSE}
+mydata2_ipums %>%
+  filter(cohort == "30-39") -> mydata3_ipums
+```
+Régression : n'ayant pas les autres variables intruments, on ne fera que les 4 premiers 
+estimation
+```{r, message=FALSE}
+reg1.MCO <- lm(LWKLYWGE ~ EDUC + factor(BIRTHYR), data=mydata3_ipums)
+summary(reg1.MCO)
+
+mydata3_ipums %>%
+  mutate( instru = factor(BIRTHYR):factor(BIRTHQTR) )-> mydata3_ipums
+reg2.TSLS <- ivreg(LWKLYWGE ~ EDUC + factor(BIRTHYR) | instru, data=mydata3_ipums)
+summary(reg2.TSLS)
+
+reg3.MCO <- lm(LWKLYWGE ~ EDUC + factor(BIRTHYR)+ AGE + I(AGE^2), data=mydata3_ipums)
+summary(reg3.MCO)
+
+reg4.TSLS <- ivreg(LWKLYWGE ~ EDUC + factor(BIRTHYR) + AGE + I(AGE^2) | instru +
+                     AGE + I(AGE^2), data=mydata3_ipums)
+summary(reg4.TSLS)
+```
+
+```{r}
+# Construction tableau
+stargazer(reg1.MCO, reg2.TSLS, reg3.MCO, reg4.TSLS,
+          dep.var.caption="",dep.var.labels="",
+          omit.table.layout = "n", star.cutoffs = NA,keep.stat=c("rsq","n"),no.space=TRUE,
+          header=FALSE,
+          keep=c("EDUC", "AGE", "AGE^2"),
+          column.labels=c("OLS", "TSLS", "OLS", "TSLS"),
+          title="OLS and TSLS of the return to education for men born 1390-1939: 1980 CENSUS", type="text"
+)
+```
+## Wald estimation 
+```{r}
+# generate the dummy variable (for 3.and 4. quarter) 
+mydata3_ipums$wald_dum <- (mydata3_ipums$BIRTHQTR == 2 | mydata3_ipums$BIRTHQTR == 3 
+                           | mydata3_ipums$BIRTHQTR == 4) * 1 
+
+mydata3_ipums %>%
+  group_by(wald_dum == 0) %>%
+  summarize(moy_salaire =  mean(LWKLYWGE, na.rm=TRUE), 
+            moy_educ = mean(EDUC, na.rm=TRUE)) %>%
+  ungroup() -> temp4
+
+
+(data <-
+    data.frame(
+      "x" = c( "Moy_salaire", "Moy_educ"),
+      "1st quarter" = c(temp4$moy_salaire[2], temp4$moy_educ[2]),
+      "3rd or 4th" = c(temp4$moy_salaire[1], temp4$moy_educ[1])
+    )
+)
+```
+
+## Calcul de l'estimateur de wald
+```{r}
+temp4 %>%
+  mutate(wage_Q1 = moy_salaire[2]) %>%
+  mutate(wage_Q2_4 = moy_salaire[1]) %>%
+  mutate(educ_Q1 = moy_educ[2]) %>%
+  mutate(educ_Q2_4 = moy_educ[1]) %>%
+  mutate(wald_est = (wage_Q1 - wage_Q2_4)/(educ_Q1 - educ_Q2_4)) %>%
+  mutate(wage_Q1 = NULL) %>%
+  mutate(wage_Q2_4 = NULL) %>%
+  mutate(educ_Q1 = NULL) %>%
+  mutate(educ_Q2_4 = NULL) ->temp4
+
+temp4$wald_est[1]
+```
+
+```{r}
+
+```
